@@ -1,8 +1,8 @@
 name: HalloweenGear
-version: '1.1.0'
+version: '${project.version}'
 main: dev.halloweengear.HalloweenGear
 api-version: '1.21'
-description: Halloween netherite armor sets and weapons.
+description: Halloween armor sets and weapons.
 commands:
   halloween:
     description: Give or list Halloween gear
