@@ -2,6 +2,7 @@ package dev.halloweengear;
 
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.minimessage.MiniMessage;
+import org.bukkit.Color;
 import org.bukkit.Material;
 import org.bukkit.NamespacedKey;
 import org.bukkit.Sound;
@@ -17,7 +18,7 @@ import org.bukkit.inventory.EquipmentSlotGroup;
 import org.bukkit.inventory.ItemFlag;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
-import org.bukkit.inventory.meta.components.EquippableComponent;
+import org.bukkit.inventory.meta.LeatherArmorMeta;
 import org.bukkit.persistence.PersistentDataType;
 import org.bukkit.plugin.java.JavaPlugin;
 
@@ -176,16 +177,20 @@ public final class HalloweenGear extends JavaPlugin {
             default -> { }
         }
 
-        // Resource-pack hooks: inventory / hand model + worn equipment model
-        meta.setItemModel(new NamespacedKey(this, id));
-        EquippableComponent eq = meta.getEquippable();
-        eq.setSlot(SLOTS[slot]);
-        eq.setModel(new NamespacedKey(this, set));
-        eq.setEquipSound(Sound.ITEM_ARMOR_EQUIP_LEATHER);
-        meta.setEquippable(eq);
+        // Vanilla leather look – dyed per set (no custom models)
+        // Pumpkin King = orange, Wraith = spectral blue-gray, Witch = purple
+        if (meta instanceof LeatherArmorMeta leather) {
+            Color dye = switch (set) {
+                case "pumpkin_king" -> Color.fromRGB(255, 117, 24);   // orange
+                case "wraith" -> Color.fromRGB(159, 180, 199);        // spectral gray-blue
+                case "witch" -> Color.fromRGB(176, 92, 224);          // purple
+                default -> Color.fromRGB(160, 101, 64);
+            };
+            leather.setColor(dye);
+        }
 
-        // Hide vanilla leather dye & attribute noise
-        meta.addItemFlags(ItemFlag.HIDE_DYE, ItemFlag.HIDE_ATTRIBUTES, ItemFlag.HIDE_ENCHANTS);
+        // Hide attribute clutter; show dye so the color is visible
+        meta.addItemFlags(ItemFlag.HIDE_ATTRIBUTES, ItemFlag.HIDE_ENCHANTS);
 
         item.setItemMeta(meta);
         return item;
@@ -264,7 +269,7 @@ public final class HalloweenGear extends JavaPlugin {
                 new NamespacedKey(this, "spd_" + id), spd - 4.0, // base is 4
                 AttributeModifier.Operation.ADD_NUMBER, EquipmentSlotGroup.MAINHAND));
 
-        meta.setItemModel(new NamespacedKey(this, id));
+        meta.setItemModel(new NamespacedKey(this, id)); // custom resource-pack model
         meta.addItemFlags(ItemFlag.HIDE_ATTRIBUTES, ItemFlag.HIDE_ENCHANTS);
         item.setItemMeta(meta);
         return item;
@@ -293,7 +298,7 @@ public final class HalloweenGear extends JavaPlugin {
                 new NamespacedKey(this, "spd_" + id), -2.4,
                 AttributeModifier.Operation.ADD_NUMBER, EquipmentSlotGroup.MAINHAND));
 
-        meta.setItemModel(new NamespacedKey(this, id));
+        meta.setItemModel(new NamespacedKey(this, id)); // custom resource-pack model
         meta.addItemFlags(ItemFlag.HIDE_ATTRIBUTES, ItemFlag.HIDE_ENCHANTS);
         item.setItemMeta(meta);
         return item;
@@ -314,7 +319,7 @@ public final class HalloweenGear extends JavaPlugin {
                 Enchantment.INFINITY, 1
         ));
 
-        meta.setItemModel(new NamespacedKey(this, id));
+        meta.setItemModel(new NamespacedKey(this, id)); // custom resource-pack model
         meta.addItemFlags(ItemFlag.HIDE_ATTRIBUTES, ItemFlag.HIDE_ENCHANTS);
         item.setItemMeta(meta);
         return item;
