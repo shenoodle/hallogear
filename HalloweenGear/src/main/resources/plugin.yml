@@ -1,8 +1,9 @@
 name: HalloweenGear
-version: '${project.version}'
+version: '2.0.0'
 main: dev.halloweengear.HalloweenGear
 api-version: '1.21'
-description: Halloween armor sets and weapons.
+author: HalloweenGear Rebuild
+description: Custom Halloween armor sets (Pumpkin King, Wraith, Witch) and weapons for Paper 1.21.11
 commands:
   halloween:
     description: Give or list Halloween gear

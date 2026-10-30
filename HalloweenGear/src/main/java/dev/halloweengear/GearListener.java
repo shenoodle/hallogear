@@ -1,30 +1,19 @@
 package dev.halloweengear;
 
-import org.bukkit.Location;
-import org.bukkit.NamespacedKey;
-import org.bukkit.Particle;
-import org.bukkit.Sound;
-import org.bukkit.World;
-import org.bukkit.configuration.file.FileConfiguration;
-import org.bukkit.entity.ArmorStand;
-import org.bukkit.entity.Bat;
-import org.bukkit.entity.Entity;
-import org.bukkit.entity.Item;
-import org.bukkit.entity.LivingEntity;
-import org.bukkit.entity.Player;
-import org.bukkit.entity.Projectile;
+import net.kyori.adventure.text.minimessage.MiniMessage;
+import org.bukkit.*;
+import org.bukkit.attribute.Attribute;
+import org.bukkit.entity.*;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
-import org.bukkit.event.block.Action;
 import org.bukkit.event.entity.EntityDamageByEntityEvent;
 import org.bukkit.event.entity.EntityDamageEvent;
-import org.bukkit.event.entity.EntityDeathEvent;
 import org.bukkit.event.entity.EntityShootBowEvent;
-import org.bukkit.event.entity.ItemDespawnEvent;
 import org.bukkit.event.entity.ProjectileHitEvent;
 import org.bukkit.event.player.PlayerInteractEvent;
-import org.bukkit.event.player.PlayerQuitEvent;
+import org.bukkit.event.player.PlayerItemHeldEvent;
+import org.bukkit.event.player.PlayerSwapHandItemsEvent;
 import org.bukkit.inventory.EquipmentSlot;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.PlayerInventory;
@@ -35,463 +24,357 @@ import org.bukkit.projectiles.ProjectileSource;
 import org.bukkit.scheduler.BukkitRunnable;
 import org.bukkit.util.Vector;
 
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Objects;
-import java.util.UUID;
-import java.util.concurrent.ThreadLocalRandom;
+import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 
+/**
+ * Handles set detection, abilities, weapon effects, particles and cooldowns.
+ */
 public final class GearListener implements Listener {
 
-    private static final String[] SUFFIX = {"_helmet", "_chestplate", "_leggings", "_boots"};
-
     private final HalloweenGear plugin;
+    private final MiniMessage mm = MiniMessage.miniMessage();
     private final NamespacedKey batArrowKey;
-    private final Map<String, Long> cooldowns = new HashMap<>();
-    private final Map<UUID, Integer> souls = new HashMap<>();
-    private final Map<UUID, String> activeSet = new HashMap<>();
-    private long secondCounter = 0;
+    private final Map<UUID, Long> abilityCooldown = new ConcurrentHashMap<>();
+    private final Map<UUID, Long> scytheCooldown = new ConcurrentHashMap<>();
+    private final Set<UUID> fireRetaliation = ConcurrentHashMap.newKeySet();
+
+    // Passive regen task for Witch full set
+    private BukkitRunnable witchRegenTask;
 
     public GearListener(HalloweenGear plugin) {
         this.plugin = plugin;
         this.batArrowKey = new NamespacedKey(plugin, "bat_arrow");
+        startWitchRegen();
     }
 
-    private FileConfiguration cfg() {
-        return plugin.getConfig();
+    public void shutdown() {
+        if (witchRegenTask != null) witchRegenTask.cancel();
+        abilityCooldown.clear();
+        scytheCooldown.clear();
+        fireRetaliation.clear();
     }
 
-    // =====================================================================
-    // Cooldown helpers
-    // =====================================================================
+    // ------------------------------------------------------------------ set detection
 
-    private long remaining(String key) {
-        Long until = cooldowns.get(key);
-        if (until == null) return 0;
-        return Math.max(0, until - System.currentTimeMillis());
-    }
-
-    private void startCooldown(String key, long seconds) {
-        cooldowns.put(key, System.currentTimeMillis() + seconds * 1000L);
-    }
-
-    private void sendCooldownMessage(Player p, String name, long leftMillis) {
-        p.sendActionBar(plugin.mm("<red>" + name + " recharging: " + String.format("%.1f", leftMillis / 1000.0) + "s"));
-    }
-
-    // =====================================================================
-    // Armor sets
-    // =====================================================================
-
-    /** Returns the set name if the player wears all 4 pieces of the same set, else null. */
-    private String fullSet(Player p) {
+    /** Returns the set id if the player wears all 4 pieces of the same set, else null. */
+    public String getFullSet(Player p) {
         PlayerInventory inv = p.getInventory();
-        ItemStack[] pieces = {inv.getHelmet(), inv.getChestplate(), inv.getLeggings(), inv.getBoots()};
-        String found = null;
-        for (int i = 0; i < 4; i++) {
-            String id = plugin.getId(pieces[i]);
-            if (id == null || !id.endsWith(SUFFIX[i])) return null;
-            String set = id.substring(0, id.length() - SUFFIX[i].length());
-            if (found == null) {
-                found = set;
-            } else if (!found.equals(set)) {
-                return null;
-            }
+        String set = null;
+        for (EquipmentSlot slot : new EquipmentSlot[]{
+                EquipmentSlot.HEAD, EquipmentSlot.CHEST, EquipmentSlot.LEGS, EquipmentSlot.FEET}) {
+            ItemStack piece = inv.getItem(slot);
+            String id = plugin.getId(piece);
+            if (id == null) return null;
+            String pieceSet = id.substring(0, id.lastIndexOf('_'));
+            if (set == null) set = pieceSet;
+            else if (!set.equals(pieceSet)) return null;
         }
-        return found;
+        return set;
     }
 
-    public void startTasks() {
-        // Effects: once per second
-        new BukkitRunnable() {
-            @Override
-            public void run() {
-                secondCounter++;
-                for (Player p : plugin.getServer().getOnlinePlayers()) {
-                    tickSet(p);
-                }
-            }
-        }.runTaskTimer(plugin, 20L, 20L);
-
-        // Particles: four times per second
-        new BukkitRunnable() {
-            @Override
-            public void run() {
-                if (!cfg().getBoolean("armor.particles", true)) return;
-                for (Player p : plugin.getServer().getOnlinePlayers()) {
-                    String set = activeSet.get(p.getUniqueId());
-                    if (set == null) continue;
-                    spawnSetParticles(p, set);
-                }
-            }
-        }.runTaskTimer(plugin, 10L, 5L);
+    private boolean isOnCooldown(UUID uuid, Map<UUID, Long> map, long seconds) {
+        Long until = map.get(uuid);
+        if (until == null) return false;
+        if (System.currentTimeMillis() < until) return true;
+        map.remove(uuid);
+        return false;
     }
 
-    private void tickSet(Player p) {
-        String set = fullSet(p);
-        String prev = activeSet.get(p.getUniqueId());
-        if (!Objects.equals(set, prev)) {
-            if (prev != null) removeEffects(p, prev);
-            if (set == null) {
-                activeSet.remove(p.getUniqueId());
-            } else {
-                activeSet.put(p.getUniqueId(), set);
-            }
-        }
+    private void setCooldown(UUID uuid, Map<UUID, Long> map, long seconds) {
+        map.put(uuid, System.currentTimeMillis() + seconds * 1000L);
+    }
+
+    // ------------------------------------------------------------------ ability trigger: Sneak + Swap Hands
+
+    @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
+    public void onSwapHands(PlayerSwapHandItemsEvent e) {
+        Player p = e.getPlayer();
+        if (!p.isSneaking()) return;
+        if (!plugin.getConfig().getBoolean("armor.abilities.enabled", true)) return;
+
+        String set = getFullSet(p);
         if (set == null) return;
-        if (!cfg().getBoolean("armor.set-bonuses", true)) return;
+
+        e.setCancelled(true); // consume the swap so items don't actually swap
+
+        UUID uuid = p.getUniqueId();
+        if (isOnCooldown(uuid, abilityCooldown, 1)) {
+            long left = (abilityCooldown.get(uuid) - System.currentTimeMillis()) / 1000;
+            p.sendActionBar(mm.deserialize("<red>Ability cooling down… " + left + "s"));
+            return;
+        }
 
         switch (set) {
-            case "pumpkin_king" -> {
-                effect(p, PotionEffectType.NIGHT_VISION, 260, 0);
-                effect(p, PotionEffectType.FIRE_RESISTANCE, 60, 0);
-                effect(p, PotionEffectType.STRENGTH, 60, 0);
-            }
-            case "wraith" -> {
-                effect(p, PotionEffectType.SPEED, 60, 1);
-                effect(p, PotionEffectType.SLOW_FALLING, 60, 0);
-            }
-            case "witch" -> {
-                effect(p, PotionEffectType.WATER_BREATHING, 60, 0);
-                effect(p, PotionEffectType.HASTE, 60, 0);
-                if (secondCounter % 3 == 0) {
-                    heal(p, cfg().getDouble("armor.witch-heal-amount", 1.0));
-                }
-            }
+            case "pumpkin_king" -> hellfireNova(p);
+            case "wraith" -> shadowStep(p);
+            case "witch" -> hexBurst(p);
             default -> { }
         }
     }
 
-    private void effect(Player p, PotionEffectType type, int duration, int amplifier) {
-        p.addPotionEffect(new PotionEffect(type, duration, amplifier, true, false, true));
-    }
+    private void hellfireNova(Player p) {
+        var cfg = plugin.getConfig().getConfigurationSection("armor.abilities.pumpkin_king");
+        if (cfg == null) return;
+        int cd = cfg.getInt("cooldown-seconds", 25);
+        double radius = cfg.getDouble("radius", 6.0);
+        double damage = cfg.getDouble("damage", 8.0);
+        int fireSec = cfg.getInt("fire-seconds", 6);
+        int thornsSec = cfg.getInt("thorns-fire-seconds", 4);
 
-    private void removeEffects(Player p, String set) {
-        switch (set) {
-            case "pumpkin_king" -> {
-                p.removePotionEffect(PotionEffectType.NIGHT_VISION);
-                p.removePotionEffect(PotionEffectType.FIRE_RESISTANCE);
-                p.removePotionEffect(PotionEffectType.STRENGTH);
-            }
-            case "wraith" -> {
-                p.removePotionEffect(PotionEffectType.SPEED);
-                p.removePotionEffect(PotionEffectType.SLOW_FALLING);
-            }
-            case "witch" -> {
-                p.removePotionEffect(PotionEffectType.WATER_BREATHING);
-                p.removePotionEffect(PotionEffectType.HASTE);
-            }
-            default -> { }
+        setCooldown(p.getUniqueId(), abilityCooldown, cd);
+        fireRetaliation.add(p.getUniqueId());
+        // Remove retaliation after duration
+        new BukkitRunnable() {
+            @Override public void run() { fireRetaliation.remove(p.getUniqueId()); }
+        }.runTaskLater(plugin, thornsSec * 20L);
+
+        Location center = p.getLocation();
+        World w = center.getWorld();
+        if (w == null) return;
+
+        w.playSound(center, Sound.ENTITY_BLAZE_SHOOT, 1.2f, 0.6f);
+        w.playSound(center, Sound.ENTITY_GENERIC_EXPLODE, 0.8f, 1.2f);
+        w.spawnParticle(Particle.FLAME, center.clone().add(0, 1, 0), 120, radius / 2, 1, radius / 2, 0.05);
+        w.spawnParticle(Particle.LAVA, center.clone().add(0, 1, 0), 40, radius / 3, 0.5, radius / 3, 0);
+
+        for (Entity ent : w.getNearbyEntities(center, radius, radius, radius)) {
+            if (!(ent instanceof LivingEntity le) || ent.equals(p) || ent instanceof ArmorStand) continue;
+            le.damage(damage, p);
+            le.setFireTicks(fireSec * 20);
         }
+        p.sendActionBar(mm.deserialize("<#FF7518>Hellfire Nova!"));
     }
 
-    private void spawnSetParticles(Player p, String set) {
-        World w = p.getWorld();
-        Location body = p.getLocation().add(0, 1.0, 0);
-        switch (set) {
-            case "pumpkin_king" -> w.spawnParticle(Particle.FLAME, p.getLocation().add(0, 0.2, 0), 2, 0.3, 0.1, 0.3, 0.01);
-            case "wraith" -> {
-                w.spawnParticle(Particle.SOUL, body, 2, 0.3, 0.5, 0.3, 0.01);
-                w.spawnParticle(Particle.SMOKE, body, 2, 0.3, 0.5, 0.3, 0.01);
-            }
-            case "witch" -> {
-                w.spawnParticle(Particle.WITCH, body, 4, 0.3, 0.6, 0.3, 0.0);
-                w.spawnParticle(Particle.ENCHANT, body, 3, 0.4, 0.6, 0.4, 0.5);
-            }
-            default -> { }
+    private void shadowStep(Player p) {
+        var cfg = plugin.getConfig().getConfigurationSection("armor.abilities.wraith");
+        if (cfg == null) return;
+        int cd = cfg.getInt("cooldown-seconds", 12);
+        double dist = cfg.getDouble("distance", 9.0);
+        int invis = cfg.getInt("invisibility-seconds", 3);
+
+        setCooldown(p.getUniqueId(), abilityCooldown, cd);
+
+        Location from = p.getLocation();
+        Vector dir = from.getDirection().normalize().multiply(dist);
+        Location to = from.clone().add(dir);
+        // Simple ground check
+        to.setY(from.getY());
+        if (to.getBlock().getType().isSolid()) {
+            to = from.clone().add(dir.multiply(0.5));
         }
+
+        World w = from.getWorld();
+        if (w != null) {
+            w.playSound(from, Sound.ENTITY_ENDERMAN_TELEPORT, 1.0f, 0.8f);
+            w.spawnParticle(Particle.SMOKE, from.clone().add(0, 1, 0), 40, 0.4, 0.6, 0.4, 0.02);
+            w.spawnParticle(Particle.SOUL, from.clone().add(0, 1, 0), 20, 0.3, 0.5, 0.3, 0.01);
+        }
+        p.teleport(to);
+        p.addPotionEffect(new PotionEffect(PotionEffectType.INVISIBILITY, invis * 20, 0, false, true));
+        if (w != null) {
+            w.spawnParticle(Particle.SMOKE, to.clone().add(0, 1, 0), 30, 0.3, 0.5, 0.3, 0.02);
+        }
+        p.sendActionBar(mm.deserialize("<#9FB4C7>Shadow Step!"));
     }
 
-    /** Wraith set: chance to dodge incoming attacks. */
+    private void hexBurst(Player p) {
+        var cfg = plugin.getConfig().getConfigurationSection("armor.abilities.witch");
+        if (cfg == null) return;
+        int cd = cfg.getInt("cooldown-seconds", 20);
+        double radius = cfg.getDouble("radius", 7.0);
+        int curseSec = cfg.getInt("curse-seconds", 6);
+        int regenSec = cfg.getInt("self-regen-seconds", 6);
+        int absSec = cfg.getInt("self-absorption-seconds", 10);
+
+        setCooldown(p.getUniqueId(), abilityCooldown, cd);
+
+        Location center = p.getLocation();
+        World w = center.getWorld();
+        if (w == null) return;
+
+        w.playSound(center, Sound.ENTITY_WITCH_AMBIENT, 1.2f, 0.7f);
+        w.playSound(center, Sound.ENTITY_EVOKER_CAST_SPELL, 0.9f, 1.1f);
+        w.spawnParticle(Particle.WITCH, center.clone().add(0, 1, 0), 80, radius / 2, 1, radius / 2, 0.02);
+        w.spawnParticle(Particle.ENCHANT, center.clone().add(0, 1, 0), 50, radius / 3, 0.8, radius / 3, 0.5);
+
+        for (Entity ent : w.getNearbyEntities(center, radius, radius, radius)) {
+            if (!(ent instanceof LivingEntity le) || ent.equals(p) || ent instanceof ArmorStand) continue;
+            le.addPotionEffect(new PotionEffect(PotionEffectType.WITHER, curseSec * 20, 1, false, true));
+            le.addPotionEffect(new PotionEffect(PotionEffectType.SLOWNESS, curseSec * 20, 1, false, true));
+            le.addPotionEffect(new PotionEffect(PotionEffectType.WEAKNESS, curseSec * 20, 0, false, true));
+        }
+
+        p.addPotionEffect(new PotionEffect(PotionEffectType.REGENERATION, regenSec * 20, 1, false, true));
+        p.addPotionEffect(new PotionEffect(PotionEffectType.ABSORPTION, absSec * 20, 1, false, true));
+        p.sendActionBar(mm.deserialize("<#B05CE0>Hex Burst!"));
+    }
+
+    // ------------------------------------------------------------------ passive: fire retaliation (Pumpkin King)
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onMeleeHitWhileRetaliation(EntityDamageByEntityEvent e) {
+        if (!(e.getEntity() instanceof Player victim)) return;
+        if (!fireRetaliation.contains(victim.getUniqueId())) return;
+        if (!(e.getDamager() instanceof LivingEntity attacker)) return;
+        if (attacker.equals(victim)) return;
+        int sec = plugin.getConfig().getInt("armor.abilities.pumpkin_king.thorns-fire-seconds", 4);
+        attacker.setFireTicks(sec * 20);
+        victim.getWorld().spawnParticle(Particle.FLAME, attacker.getLocation().add(0, 1, 0), 15, 0.3, 0.5, 0.3, 0.02);
+    }
+
+    // ------------------------------------------------------------------ passive: Wraith dodge
+
     @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
-    public void onDamaged(EntityDamageEvent e) {
+    public void onDamageWraithDodge(EntityDamageEvent e) {
         if (!(e.getEntity() instanceof Player p)) return;
-        switch (e.getCause()) {
-            case ENTITY_ATTACK, ENTITY_SWEEP_ATTACK, PROJECTILE -> { }
-            default -> { return; }
-        }
-        if (!"wraith".equals(fullSet(p))) return;
-        double chance = cfg().getDouble("armor.wraith-dodge-chance", 0.15);
-        if (ThreadLocalRandom.current().nextDouble() < chance) {
-            e.setCancelled(true);
-            Location loc = p.getLocation().add(0, 1, 0);
-            p.getWorld().spawnParticle(Particle.SOUL, loc, 15, 0.4, 0.6, 0.4, 0.05);
-            p.getWorld().playSound(loc, Sound.ENTITY_PHANTOM_FLAP, 1.0f, 1.4f);
-            p.sendActionBar(plugin.mm("<#9FB4C7>You phase through the attack..."));
-        }
-    }
-
-    /** Dropped Halloween items can't be destroyed by fire, lava, explosions, cactus, etc. */
-    @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
-    public void onItemDamaged(EntityDamageEvent e) {
-        if (!cfg().getBoolean("items.fireproof", true)) return;
-        if (!(e.getEntity() instanceof Item drop)) return;
-        if (plugin.getId(drop.getItemStack()) == null) return;
-        if (e.getCause() == EntityDamageEvent.DamageCause.VOID) return;
+        if (!"wraith".equals(getFullSet(p))) return;
+        double chance = plugin.getConfig().getDouble("armor.wraith-dodge-chance", 0.20);
+        if (Math.random() >= chance) return;
         e.setCancelled(true);
-        drop.setFireTicks(0);
+        p.getWorld().spawnParticle(Particle.SMOKE, p.getLocation().add(0, 1, 0), 25, 0.4, 0.6, 0.4, 0.03);
+        p.getWorld().playSound(p.getLocation(), Sound.ENTITY_ENDERMAN_TELEPORT, 0.6f, 1.5f);
+        p.sendActionBar(mm.deserialize("<#9FB4C7>Dodged!"));
     }
 
-    /** Dropped Halloween items never despawn. */
-    @EventHandler(ignoreCancelled = true)
-    public void onItemDespawn(ItemDespawnEvent e) {
-        if (!cfg().getBoolean("items.never-despawn", true)) return;
-        if (plugin.getId(e.getEntity().getItemStack()) == null) return;
-        e.setCancelled(true);
-    }
+    // ------------------------------------------------------------------ Witch passive regen
 
-    @EventHandler
-    public void onQuit(PlayerQuitEvent e) {
-        UUID id = e.getPlayer().getUniqueId();
-        activeSet.remove(id);
-        souls.remove(id);
-        String prefix = id.toString();
-        cooldowns.keySet().removeIf(k -> k.startsWith(prefix));
-    }
-
-    // =====================================================================
-    // Cursed Blade + Reaper's Scythe (on-hit effects)
-    // =====================================================================
-
-    @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
-    public void onHit(EntityDamageByEntityEvent e) {
-        if (!(e.getDamager() instanceof Player p)) return;
-        if (!(e.getEntity() instanceof LivingEntity victim)) return;
-        if (victim instanceof ArmorStand) return;
-
-        String id = plugin.getId(p.getInventory().getItemInMainHand());
-        if (id == null) return;
-
-        switch (id) {
-            case "cursed_blade" -> {
-                int wither = cfg().getInt("weapons.cursed-blade.wither-seconds", 4) * 20;
-                int weak = cfg().getInt("weapons.cursed-blade.weakness-seconds", 5) * 20;
-                victim.addPotionEffect(new PotionEffect(PotionEffectType.WITHER, wither, 0));
-                victim.addPotionEffect(new PotionEffect(PotionEffectType.WEAKNESS, weak, 0));
-                Location loc = victim.getLocation().add(0, victim.getHeight() / 2, 0);
-                victim.getWorld().spawnParticle(Particle.SOUL_FIRE_FLAME, loc, 12, 0.3, 0.4, 0.3, 0.03);
-                victim.getWorld().playSound(loc, Sound.ENTITY_WITHER_HURT, 0.5f, 1.6f);
-
-                // Curse spread: infects up to 3 nearby enemies with Wither
-                double spread = cfg().getDouble("weapons.cursed-blade.curse-spread-chance", 0.15);
-                if (ThreadLocalRandom.current().nextDouble() < spread) {
-                    int infected = 0;
-                    for (Entity en : victim.getNearbyEntities(4, 4, 4)) {
-                        if (infected >= 3) break;
-                        if (!(en instanceof LivingEntity le) || le instanceof ArmorStand) continue;
-                        if (le.equals(p) || le.equals(victim)) continue;
-                        le.addPotionEffect(new PotionEffect(PotionEffectType.WITHER, 60, 0));
-                        le.getWorld().spawnParticle(Particle.SOUL_FIRE_FLAME, le.getLocation().add(0, 1, 0), 8, 0.3, 0.4, 0.3, 0.02);
-                        infected++;
+    private void startWitchRegen() {
+        witchRegenTask = new BukkitRunnable() {
+            @Override
+            public void run() {
+                double amount = plugin.getConfig().getDouble("armor.witch-heal-amount", 1.5);
+                for (Player p : Bukkit.getOnlinePlayers()) {
+                    if (!"witch".equals(getFullSet(p))) continue;
+                    if (p.getHealth() >= p.getAttribute(Attribute.MAX_HEALTH).getValue()) continue;
+                    p.setHealth(Math.min(p.getHealth() + amount,
+                            p.getAttribute(Attribute.MAX_HEALTH).getValue()));
+                    if (plugin.getConfig().getBoolean("armor.particles", true)) {
+                        p.getWorld().spawnParticle(Particle.HEART, p.getLocation().add(0, 2, 0), 2, 0.2, 0.2, 0.2, 0);
                     }
                 }
             }
-            case "reaper_scythe" -> {
-                double chance = cfg().getDouble("weapons.reaper-scythe.lifesteal-chance", 0.25);
-                if (ThreadLocalRandom.current().nextDouble() < chance) {
-                    heal(p, cfg().getDouble("weapons.reaper-scythe.lifesteal-amount", 2.0));
-                    Location loc = victim.getLocation().add(0, victim.getHeight() / 2, 0);
-                    victim.getWorld().spawnParticle(Particle.SOUL, loc, 10, 0.3, 0.4, 0.3, 0.05);
-                }
-            }
-            default -> { }
+        };
+        witchRegenTask.runTaskTimer(plugin, 60L, 60L); // every 3 seconds
+    }
+
+    // ------------------------------------------------------------------ Cursed Blade effects
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onCursedBladeHit(EntityDamageByEntityEvent e) {
+        if (!(e.getDamager() instanceof Player attacker)) return;
+        ItemStack weapon = attacker.getInventory().getItemInMainHand();
+        if (!"cursed_blade".equals(plugin.getId(weapon))) return;
+        if (!(e.getEntity() instanceof LivingEntity target)) return;
+
+        int wither = plugin.getConfig().getInt("weapons.cursed-blade.wither-seconds", 4);
+        int weak = plugin.getConfig().getInt("weapons.cursed-blade.weakness-seconds", 5);
+        target.addPotionEffect(new PotionEffect(PotionEffectType.WITHER, wither * 20, 1, false, true));
+        target.addPotionEffect(new PotionEffect(PotionEffectType.WEAKNESS, weak * 20, 0, false, true));
+        target.getWorld().spawnParticle(Particle.SMOKE, target.getLocation().add(0, 1, 0), 12, 0.3, 0.4, 0.3, 0.01);
+    }
+
+    // ------------------------------------------------------------------ Reaper Scythe: lifesteal + Soul Slash
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onScytheHit(EntityDamageByEntityEvent e) {
+        if (!(e.getDamager() instanceof Player attacker)) return;
+        ItemStack weapon = attacker.getInventory().getItemInMainHand();
+        if (!"reaper_scythe".equals(plugin.getId(weapon))) return;
+        if (!(e.getEntity() instanceof LivingEntity)) return;
+
+        double chance = plugin.getConfig().getDouble("weapons.reaper-scythe.lifesteal-chance", 0.25);
+        double amount = plugin.getConfig().getDouble("weapons.reaper-scythe.lifesteal-amount", 2.0);
+        if (Math.random() < chance) {
+            double max = attacker.getAttribute(Attribute.MAX_HEALTH).getValue();
+            attacker.setHealth(Math.min(attacker.getHealth() + amount, max));
+            attacker.getWorld().spawnParticle(Particle.HEART, attacker.getLocation().add(0, 2, 0), 4, 0.3, 0.2, 0.3, 0);
+            attacker.getWorld().playSound(attacker.getLocation(), Sound.ENTITY_PLAYER_LEVELUP, 0.4f, 1.8f);
         }
     }
 
-    // =====================================================================
-    // Reaper's Scythe: souls from kills
-    // =====================================================================
-
     @EventHandler
-    public void onKill(EntityDeathEvent e) {
-        LivingEntity dead = e.getEntity();
-        Player killer = dead.getKiller();
-        if (killer == null || dead instanceof ArmorStand) return;
-        if (!"reaper_scythe".equals(plugin.getId(killer.getInventory().getItemInMainHand()))) return;
-
-        int max = cfg().getInt("weapons.reaper-scythe.max-souls", 5);
-        int count = Math.min(max, souls.getOrDefault(killer.getUniqueId(), 0) + 1);
-        souls.put(killer.getUniqueId(), count);
-        killer.sendActionBar(plugin.mm("<#B91C1C>Souls: " + count + "/" + max));
-        dead.getWorld().spawnParticle(Particle.SOUL, dead.getLocation().add(0, 1, 0), 12, 0.3, 0.5, 0.3, 0.05);
-    }
-
-    // =====================================================================
-    // Right-click abilities: Reaper's Scythe (Soul Slash) and Cursed Blade (Cursed Nova)
-    // =====================================================================
-
-    @EventHandler
-    public void onInteract(PlayerInteractEvent e) {
+    public void onScytheRightClick(PlayerInteractEvent e) {
         if (e.getHand() != EquipmentSlot.HAND) return;
-        Action action = e.getAction();
-        if (action != Action.RIGHT_CLICK_AIR && action != Action.RIGHT_CLICK_BLOCK) return;
+        if (!e.getAction().isRightClick()) return;
+        Player p = e.getPlayer();
+        ItemStack item = p.getInventory().getItemInMainHand();
+        if (!"reaper_scythe".equals(plugin.getId(item))) return;
 
-        String id = plugin.getId(e.getItem());
-        if (id == null) return;
-        if (!id.equals("reaper_scythe") && !id.equals("cursed_blade")) return;
-
-        // Let players still open chests, doors, etc. with these in hand
-        if (action == Action.RIGHT_CLICK_BLOCK && e.getClickedBlock() != null
-                && e.getClickedBlock().getType().isInteractable()) {
+        UUID uuid = p.getUniqueId();
+        int cd = plugin.getConfig().getInt("weapons.reaper-scythe.slash-cooldown-seconds", 8);
+        if (isOnCooldown(uuid, scytheCooldown, cd)) {
+            long left = (scytheCooldown.get(uuid) - System.currentTimeMillis()) / 1000;
+            p.sendActionBar(mm.deserialize("<red>Soul Slash cooling down… " + left + "s"));
             return;
         }
+        setCooldown(uuid, scytheCooldown, cd);
 
-        e.setCancelled(true);
-        if (id.equals("reaper_scythe")) {
-            soulSlash(e.getPlayer());
+        double radius = plugin.getConfig().getDouble("weapons.reaper-scythe.slash-radius", 4.5);
+        double damage = plugin.getConfig().getDouble("weapons.reaper-scythe.slash-damage", 8.0);
+        double healPer = plugin.getConfig().getDouble("weapons.reaper-scythe.heal-per-target", 1.0);
+        double maxHeal = plugin.getConfig().getDouble("weapons.reaper-scythe.max-heal", 6.0);
+
+        Location center = p.getLocation();
+        World w = center.getWorld();
+        if (w == null) return;
+
+        w.playSound(center, Sound.ENTITY_PLAYER_ATTACK_SWEEP, 1.2f, 0.7f);
+        w.playSound(center, Sound.PARTICLE_SOUL_ESCAPE, 1.0f, 0.8f);
+        w.spawnParticle(Particle.SWEEP_ATTACK, center.clone().add(0, 1, 0), 8, radius / 3, 0.3, radius / 3, 0);
+        w.spawnParticle(Particle.SOUL, center.clone().add(0, 1, 0), 50, radius / 2, 0.6, radius / 2, 0.02);
+
+        double healed = 0;
+        for (Entity ent : w.getNearbyEntities(center, radius, radius, radius)) {
+            if (!(ent instanceof LivingEntity le) || ent.equals(p) || ent instanceof ArmorStand) continue;
+            le.damage(damage, p);
+            healed += healPer;
+        }
+        healed = Math.min(healed, maxHeal);
+        if (healed > 0) {
+            double max = p.getAttribute(Attribute.MAX_HEALTH).getValue();
+            p.setHealth(Math.min(p.getHealth() + healed, max));
+            p.sendActionBar(mm.deserialize("<#4B0082>Soul Slash! +" + String.format("%.1f", healed) + " HP"));
         } else {
-            cursedNova(e.getPlayer());
+            p.sendActionBar(mm.deserialize("<#4B0082>Soul Slash!"));
         }
     }
 
-    private void soulSlash(Player p) {
-        String key = p.getUniqueId() + ":slash";
-        long left = remaining(key);
-        if (left > 0) {
-            sendCooldownMessage(p, "Soul Slash", left);
-            return;
-        }
-        startCooldown(key, cfg().getLong("weapons.reaper-scythe.slash-cooldown-seconds", 8));
+    // ------------------------------------------------------------------ Bat Bow
 
-        double radius = cfg().getDouble("weapons.reaper-scythe.slash-radius", 4.5);
-        double baseDamage = cfg().getDouble("weapons.reaper-scythe.slash-damage", 8.0);
-        double soulBonus = cfg().getDouble("weapons.reaper-scythe.soul-bonus-damage", 2.0);
-        double healPer = cfg().getDouble("weapons.reaper-scythe.heal-per-target", 1.0);
-        double maxHeal = cfg().getDouble("weapons.reaper-scythe.max-heal", 6.0);
-
-        int stored = souls.getOrDefault(p.getUniqueId(), 0);
-        double damage = baseDamage + stored * soulBonus;
-
-        Location eye = p.getEyeLocation();
-        Vector dir = eye.getDirection().normalize();
-        double healed = stored; // each stored soul heals 1 HP
-        int hits = 0;
-
-        for (Entity en : p.getNearbyEntities(radius, radius, radius)) {
-            if (!(en instanceof LivingEntity le) || le instanceof ArmorStand) continue;
-            Vector to = le.getLocation().add(0, le.getHeight() / 2, 0).toVector().subtract(eye.toVector());
-            if (to.lengthSquared() == 0) continue;
-            if (to.normalize().dot(dir) < 0.35) continue;
-            le.damage(damage, p);
-            hits++;
-        }
-        healed += Math.min(maxHeal, hits * healPer);
-        if (healed > 0) heal(p, healed);
-
-        if (stored > 0) {
-            souls.remove(p.getUniqueId());
-            p.sendActionBar(plugin.mm("<#B91C1C>Unleashed " + stored + " souls!"));
-        }
-
-        World w = p.getWorld();
-        Location front = eye.clone().add(dir.clone().multiply(1.6));
-        w.spawnParticle(Particle.SWEEP_ATTACK, front, 3, 0.6, 0.3, 0.6, 0);
-        w.spawnParticle(Particle.SOUL, front, 20 + stored * 6, 0.8, 0.4, 0.8, 0.05);
-        w.playSound(p.getLocation(), Sound.ENTITY_PLAYER_ATTACK_SWEEP, 1.0f, 0.6f);
-        w.playSound(p.getLocation(), Sound.ENTITY_WITHER_SHOOT, 0.4f, 1.8f);
-    }
-
-    private void cursedNova(Player p) {
-        String key = p.getUniqueId() + ":nova";
-        long left = remaining(key);
-        if (left > 0) {
-            sendCooldownMessage(p, "Cursed Nova", left);
-            return;
-        }
-
-        double cost = cfg().getDouble("weapons.cursed-blade.nova-hp-cost", 2.0);
-        if (p.getHealth() <= cost + 2.0) {
-            p.sendActionBar(plugin.mm("<red>Too weak to pay the blood price."));
-            return;
-        }
-        startCooldown(key, cfg().getLong("weapons.cursed-blade.nova-cooldown-seconds", 10));
-        p.setHealth(p.getHealth() - cost);
-
-        double radius = cfg().getDouble("weapons.cursed-blade.nova-radius", 6.0);
-        double damage = cfg().getDouble("weapons.cursed-blade.nova-damage", 6.0);
-
-        for (Entity en : p.getNearbyEntities(radius, radius, radius)) {
-            if (!(en instanceof LivingEntity le) || le instanceof ArmorStand) continue;
-            if (le.getLocation().distanceSquared(p.getLocation()) > radius * radius) continue;
-            le.damage(damage, p);
-            le.addPotionEffect(new PotionEffect(PotionEffectType.WITHER, 60, 1));
-            le.addPotionEffect(new PotionEffect(PotionEffectType.SLOWNESS, 60, 1));
-        }
-
-        World w = p.getWorld();
-        Location c = p.getLocation().add(0, 0.3, 0);
-        for (double r = 1.0; r <= radius; r += 1.0) {
-            for (int k = 0; k < 24; k++) {
-                double ang = 2 * Math.PI * k / 24.0;
-                w.spawnParticle(Particle.SOUL_FIRE_FLAME,
-                        c.getX() + Math.cos(ang) * r, c.getY(), c.getZ() + Math.sin(ang) * r,
-                        1, 0, 0, 0, 0);
-            }
-        }
-        w.playSound(c, Sound.ENTITY_ELDER_GUARDIAN_CURSE, 1.0f, 0.8f);
-        w.playSound(c, Sound.ENTITY_WITHER_SHOOT, 0.6f, 0.7f);
-    }
-
-    // =====================================================================
-    // Bat Bow
-    // =====================================================================
-
-    @EventHandler(ignoreCancelled = true)
-    public void onShoot(EntityShootBowEvent e) {
-        if (!(e.getEntity() instanceof Player)) return;
+    @EventHandler
+    public void onShootBatBow(EntityShootBowEvent e) {
         ItemStack bow = e.getBow();
         if (!"bat_bow".equals(plugin.getId(bow))) return;
-
-        double force = e.getForce();
-        double minForce = cfg().getDouble("weapons.bat-bow.min-force", 0.5);
-        double fullForce = cfg().getDouble("weapons.bat-bow.empowered-force", 0.95);
-        if (force < minForce) return; // weak shots just fly normally
-
-        byte level = force >= fullForce ? (byte) 2 : (byte) 1;
-        e.getProjectile().getPersistentDataContainer().set(batArrowKey, PersistentDataType.BYTE, level);
+        e.getProjectile().getPersistentDataContainer().set(batArrowKey, PersistentDataType.BYTE, (byte) 1);
     }
 
     @EventHandler
     public void onProjectileHit(ProjectileHitEvent e) {
         Projectile proj = e.getEntity();
-        Byte flag = proj.getPersistentDataContainer().get(batArrowKey, PersistentDataType.BYTE);
-        if (flag == null) return;
-        // Only burst once per arrow
-        proj.getPersistentDataContainer().remove(batArrowKey);
-
-        Location loc = e.getHitEntity() != null
+        if (!proj.getPersistentDataContainer().has(batArrowKey, PersistentDataType.BYTE)) return;
+        Location at = e.getHitEntity() != null
                 ? e.getHitEntity().getLocation().add(0, 1, 0)
                 : proj.getLocation();
         ProjectileSource src = proj.getShooter();
-        Player shooter = (src instanceof Player pl) ? pl : null;
-        batSwarm(loc, shooter, flag == 2);
+        Entity shooter = src instanceof Entity en ? en : null;
+        proj.remove();
+        batSwarm(shooter, at);
     }
 
-    private void batSwarm(Location loc, Player shooter, boolean empowered) {
+    private void batSwarm(Entity shooter, Location loc) {
+        var c = plugin.getConfig();
+        int count = c.getInt("weapons.bat-bow.bat-count", 6);
+        double pulse = c.getDouble("weapons.bat-bow.pulse-damage", 3.0);
+        double radius = c.getDouble("weapons.bat-bow.radius", 3.5);
+        int seconds = c.getInt("weapons.bat-bow.duration-seconds", 3);
+        boolean affectPlayers = c.getBoolean("weapons.bat-bow.affect-players", true);
         World w = loc.getWorld();
         if (w == null) return;
 
-        int count = cfg().getInt("weapons.bat-bow.bat-count", 6);
-        double pulseDamage = cfg().getDouble("weapons.bat-bow.pulse-damage", 3.0);
-        double radius = cfg().getDouble("weapons.bat-bow.radius", 3.5);
-        int durationTicks = cfg().getInt("weapons.bat-bow.duration-seconds", 3) * 20;
-        boolean affectPlayers = cfg().getBoolean("weapons.bat-bow.affect-players", true);
-        double batHeal = cfg().getDouble("weapons.bat-bow.bat-heal", 1.0);
-        int blindTicks = cfg().getInt("weapons.bat-bow.empowered-blind-seconds", 3) * 20;
-
-        if (empowered) {
-            count *= 2;
-            radius *= 1.4;
-        }
-        final double finalRadius = radius;
-
         List<Bat> bats = new ArrayList<>();
-        ThreadLocalRandom rnd = ThreadLocalRandom.current();
         for (int i = 0; i < count; i++) {
-            Location l = loc.clone().add((rnd.nextDouble() - 0.5) * 2, rnd.nextDouble() * 1.5, (rnd.nextDouble() - 0.5) * 2);
-            Bat bat = w.spawn(l, Bat.class, b -> {
+            Bat bat = w.spawn(loc, Bat.class, b -> {
                 b.setInvulnerable(true);
                 b.setSilent(true);
                 b.setPersistent(false);
@@ -499,54 +382,39 @@ public final class GearListener implements Listener {
             });
             bats.add(bat);
         }
-
         w.playSound(loc, Sound.ENTITY_BAT_TAKEOFF, 1.0f, 0.8f);
-        w.spawnParticle(Particle.SMOKE, loc, 25, 0.8, 0.5, 0.8, 0.03);
 
         new BukkitRunnable() {
-            int elapsed = 0;
-
+            int ticks = 0;
             @Override
             public void run() {
-                elapsed += 20;
-                int hits = 0;
-                for (Entity en : w.getNearbyEntities(loc, finalRadius, finalRadius, finalRadius)) {
-                    if (!(en instanceof LivingEntity le)) continue;
-                    if (le instanceof Bat || le instanceof ArmorStand) continue;
-                    if (shooter != null && le.equals(shooter)) continue;
-                    if (!affectPlayers && le instanceof Player) continue;
-                    if (shooter != null) {
-                        le.damage(pulseDamage, shooter);
-                    } else {
-                        le.damage(pulseDamage);
-                    }
-                    if (empowered) {
-                        le.addPotionEffect(new PotionEffect(PotionEffectType.BLINDNESS, blindTicks, 0));
-                    }
-                    hits++;
-                }
-                // Bats feed the shooter
-                if (hits > 0 && shooter != null && shooter.isOnline()) {
-                    heal(shooter, batHeal);
-                }
-                w.spawnParticle(Particle.SMOKE, loc, 10, finalRadius / 2, 0.5, finalRadius / 2, 0.02);
-
-                if (elapsed >= durationTicks) {
-                    for (Bat b : bats) b.remove();
+                if (ticks++ >= seconds) {
+                    for (Bat b : bats) if (b.isValid()) b.remove();
                     cancel();
+                    return;
                 }
+                for (Entity ent : w.getNearbyEntities(loc, radius, radius, radius)) {
+                    if (!(ent instanceof LivingEntity le)) continue;
+                    if (ent instanceof Bat || ent instanceof ArmorStand || ent.equals(shooter)) continue;
+                    if (ent instanceof Player && !affectPlayers) continue;
+                    le.damage(pulse, shooter);
+                }
+                w.spawnParticle(Particle.SMOKE, loc, 20, radius / 2, 0.5, radius / 2, 0.01);
             }
-        }.runTaskTimer(plugin, 20L, 20L);
+        }.runTaskTimer(plugin, 0L, 20L);
     }
 
-    // =====================================================================
-    // Util
-    // =====================================================================
+    // ------------------------------------------------------------------ item protection (fireproof / never despawn)
 
-    @SuppressWarnings("deprecation")
-    private void heal(LivingEntity entity, double amount) {
-        if (entity.isDead()) return;
-        double max = entity.getMaxHealth();
-        entity.setHealth(Math.min(max, entity.getHealth() + amount));
+    @EventHandler
+    public void onItemSpawn(org.bukkit.event.entity.ItemSpawnEvent e) {
+        ItemStack stack = e.getEntity().getItemStack();
+        if (!plugin.isHalloweenItem(stack)) return;
+        if (plugin.getConfig().getBoolean("items.fireproof", true)) {
+            e.getEntity().setInvulnerable(true);
+        }
+        if (plugin.getConfig().getBoolean("items.never-despawn", true)) {
+            e.getEntity().setUnlimitedLifetime(true);
+        }
     }
 }

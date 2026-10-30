@@ -2,14 +2,14 @@ package dev.halloweengear;
 
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.minimessage.MiniMessage;
-import org.bukkit.Bukkit;
-import org.bukkit.Color;
 import org.bukkit.Material;
 import org.bukkit.NamespacedKey;
-import org.bukkit.command.Command;
-import org.bukkit.command.CommandSender;
+import org.bukkit.Sound;
 import org.bukkit.attribute.Attribute;
 import org.bukkit.attribute.AttributeModifier;
+import org.bukkit.command.Command;
+import org.bukkit.command.CommandSender;
+import org.bukkit.configuration.file.FileConfiguration;
 import org.bukkit.enchantments.Enchantment;
 import org.bukkit.entity.Player;
 import org.bukkit.inventory.EquipmentSlot;
@@ -17,7 +17,6 @@ import org.bukkit.inventory.EquipmentSlotGroup;
 import org.bukkit.inventory.ItemFlag;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
-import org.bukkit.inventory.meta.LeatherArmorMeta;
 import org.bukkit.inventory.meta.components.EquippableComponent;
 import org.bukkit.persistence.PersistentDataType;
 import org.bukkit.plugin.java.JavaPlugin;
@@ -28,14 +27,20 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 
+/**
+ * HalloweenGear 2.0.0 – Complete rebuild for Paper 1.21.11
+ * Leather-base armor with Netherite-level protection + custom models.
+ */
 public final class HalloweenGear extends JavaPlugin {
 
+    public static final String[] SUFFIX = {"helmet", "chestplate", "leggings", "boots"};
     public static final List<String> SETS = List.of("pumpkin_king", "wraith", "witch");
-    private static final String[] SUFFIX = {"helmet", "chestplate", "leggings", "boots"};
-    private static final Material[] LEATHER = {
+
+    // Leather base so custom textures/models apply cleanly
+    private static final Material[] ARMOR = {
             Material.LEATHER_HELMET, Material.LEATHER_CHESTPLATE,
             Material.LEATHER_LEGGINGS, Material.LEATHER_BOOTS};
-    private static final EquipmentSlotGroup[] SLOT_GROUPS = {
+    private static final EquipmentSlotGroup[] GROUPS = {
             EquipmentSlotGroup.HEAD, EquipmentSlotGroup.CHEST,
             EquipmentSlotGroup.LEGS, EquipmentSlotGroup.FEET};
     private static final EquipmentSlot[] SLOTS = {
@@ -49,36 +54,38 @@ public final class HalloweenGear extends JavaPlugin {
             "pumpkin_king", "<#FF7518>",
             "wraith", "<#9FB4C7>",
             "witch", "<#B05CE0>");
-    private static final Map<String, String> SET_BONUS = Map.of(
-            "pumpkin_king", "Night Vision, Fire Resistance, Strength I",
-            "wraith", "Speed II, Slow Falling, chance to dodge attacks",
-            "witch", "Water Breathing, Haste I, slow self-healing");
-    private static final Map<String, int[]> PIECE_COLORS = Map.of(
-            "pumpkin_king", new int[]{0xFF7518, 0xFF7518, 0x1C1C1C, 0x1C1C1C},
-            "wraith", new int[]{0xB8C7D6, 0x4A5666, 0x4A5666, 0xB8C7D6},
-            "witch", new int[]{0x2E8B3A, 0x6A2C91, 0x6A2C91, 0x2E8B3A});
-    private static final Map<String, String[]> PIECE_NAMES = Map.of(
-            "pumpkin_king", new String[]{"Pumpkin King's Crown", "Pumpkin King's Tunic", "Pumpkin King's Greaves", "Pumpkin King's Boots"},
-            "wraith", new String[]{"Wraith Hood", "Wraith Shroud", "Wraith Wrappings", "Wraith Treads"},
-            "witch", new String[]{"Witch's Hat", "Witch's Robe", "Witch's Leggings", "Witch's Boots"});
 
-    private final MiniMessage mini = MiniMessage.miniMessage();
+    private static final Map<String, String[]> PIECE_NAMES = Map.of(
+            "pumpkin_king", new String[]{
+                    "Pumpkin King's Crown", "Pumpkin King's Tunic",
+                    "Pumpkin King's Greaves", "Pumpkin King's Boots"},
+            "wraith", new String[]{
+                    "Wraith Hood", "Wraith Shroud",
+                    "Wraith Wrappings", "Wraith Treads"},
+            "witch", new String[]{
+                    "Witch's Hat", "Witch's Robes",
+                    "Witch's Leggings", "Witch's Boots"});
+
+    private final MiniMessage mm = MiniMessage.miniMessage();
     private NamespacedKey idKey;
+    private GearListener listener;
 
     @Override
     public void onEnable() {
         saveDefaultConfig();
         idKey = new NamespacedKey(this, "item_id");
-        GearListener listener = new GearListener(this);
+        listener = new GearListener(this);
         getServer().getPluginManager().registerEvents(listener, this);
-        listener.startTasks();
-        getLogger().info("HalloweenGear enabled.");
+        getLogger().info("HalloweenGear 2.0.0 enabled – leather-base armor + clean resource pack.");
     }
 
-    // ---------- helpers used by the listener ----------
+    @Override
+    public void onDisable() {
+        if (listener != null) listener.shutdown();
+    }
 
-    public Component mm(String text) {
-        return mini.deserialize(text);
+    public NamespacedKey getIdKey() {
+        return idKey;
     }
 
     public String getId(ItemStack item) {
@@ -86,10 +93,14 @@ public final class HalloweenGear extends JavaPlugin {
         return item.getItemMeta().getPersistentDataContainer().get(idKey, PersistentDataType.STRING);
     }
 
+    public boolean isHalloweenItem(ItemStack item) {
+        return getId(item) != null;
+    }
+
     public List<String> allItemIds() {
         List<String> ids = new ArrayList<>();
         for (String set : SETS) {
-            for (String suffix : SUFFIX) ids.add(set + "_" + suffix);
+            for (String s : SUFFIX) ids.add(set + "_" + s);
         }
         ids.add("cursed_blade");
         ids.add("reaper_scythe");
@@ -97,259 +108,327 @@ public final class HalloweenGear extends JavaPlugin {
         return ids;
     }
 
-    // ---------- item creation ----------
-
     public ItemStack createItem(String rawId) {
-        if (rawId == null) return null;
         String id = rawId.toLowerCase(Locale.ROOT);
-        for (String set : SETS) {
-            for (int i = 0; i < 4; i++) {
-                if (id.equals(set + "_" + SUFFIX[i])) return armorPiece(set, i);
-            }
-        }
         return switch (id) {
             case "cursed_blade" -> cursedBlade();
             case "reaper_scythe" -> reaperScythe();
             case "bat_bow" -> batBow();
-            default -> null;
+            default -> {
+                for (String set : SETS) {
+                    for (int i = 0; i < 4; i++) {
+                        if (id.equals(set + "_" + SUFFIX[i])) {
+                            yield armorPiece(set, i);
+                        }
+                    }
+                }
+                yield null;
+            }
         };
     }
 
-    private boolean usePack() {
-        return getConfig().getBoolean("resource-pack.enabled", true);
-    }
+    // ------------------------------------------------------------------ armor
 
-    /** Armor only uses the pack's models if both switches are on (off by default). */
-    private boolean armorPack() {
-        return usePack() && getConfig().getBoolean("armor.use-resource-pack", false);
-    }
-
-    private ItemStack armorPiece(String set, int i) {
-        ItemStack item = new ItemStack(LEATHER[i]);
-        LeatherArmorMeta lm = (LeatherArmorMeta) item.getItemMeta();
-        lm.setColor(Color.fromRGB(PIECE_COLORS.get(set)[i]));
-
-        // Netherite-level stats (configurable). Custom modifiers replace the leather defaults.
-        List<Integer> armorPoints = getConfig().getIntegerList("armor.stats.armor");
-        if (armorPoints.size() < 4) armorPoints = List.of(3, 8, 6, 3);
-        double toughness = getConfig().getDouble("armor.stats.toughness", 3.0);
-        double knockback = getConfig().getDouble("armor.stats.knockback-resistance", 0.1);
-        EquipmentSlotGroup slot = SLOT_GROUPS[i];
-        lm.addAttributeModifier(Attribute.ARMOR, new AttributeModifier(
-                new NamespacedKey(this, "armor_" + SUFFIX[i]), armorPoints.get(i),
-                AttributeModifier.Operation.ADD_NUMBER, slot));
-        lm.addAttributeModifier(Attribute.ARMOR_TOUGHNESS, new AttributeModifier(
-                new NamespacedKey(this, "toughness_" + SUFFIX[i]), toughness,
-                AttributeModifier.Operation.ADD_NUMBER, slot));
-        lm.addAttributeModifier(Attribute.KNOCKBACK_RESISTANCE, new AttributeModifier(
-                new NamespacedKey(this, "knockback_" + SUFFIX[i]), knockback,
-                AttributeModifier.Operation.ADD_NUMBER, slot));
-        item.setItemMeta(lm);
-
-        String color = SET_COLOR.get(set);
-        List<String> lore = List.of(
-                "",
-                "<gray>Set: " + color + SET_NAME.get(set),
-                "<gray>Wear all 4 pieces for:",
-                "<yellow>" + SET_BONUS.get(set),
-                "",
-                "<gray>Netherite-level protection <dark_gray>|</dark_gray> Unbreakable <dark_gray>|</dark_gray> Fireproof",
-                "",
-                "<dark_gray>Halloween Collection");
-
-        Map<Enchantment, Integer> ench = new LinkedHashMap<>();
-        ench.put(Enchantment.PROTECTION, 4);
-        ItemStack made = finish(item, set + "_" + SUFFIX[i], color + PIECE_NAMES.get(set)[i], lore, ench, armorPack());
-
-        if (armorPack()) {
-            // Optional: custom worn-armor model from the resource pack
-            ItemMeta meta = made.getItemMeta();
-            EquippableComponent eq = meta.getEquippable();
-            eq.setSlot(SLOTS[i]);
-            if (i == 0) {
-                // Helmets are 3D head models shown from the item model, so no worn-armor layer
-                eq.setModel(null);
-            } else {
-                NamespacedKey model = NamespacedKey.fromString("halloweengear:" + set);
-                if (model != null) eq.setModel(model);
-            }
-            meta.setEquippable(eq);
-            made.setItemMeta(meta);
-        }
-        return made;
-    }
-
-    private ItemStack cursedBlade() {
-        List<String> lore = List.of(
-                "",
-                "<gray>A blade that hungers for the living.",
-                "<dark_purple>Hits inflict Wither and Weakness,",
-                "<dark_purple>and the curse can spread to nearby foes.",
-                "<red>Right-click: Cursed Nova <gray>(costs a little health)",
-                "",
-                "<gray>Netherite <dark_gray>|</dark_gray> Unbreakable <dark_gray>|</dark_gray> Fireproof",
-                "<dark_gray>Halloween Collection");
-        Map<Enchantment, Integer> ench = new LinkedHashMap<>();
-        ench.put(Enchantment.SHARPNESS, 4);
-        ench.put(Enchantment.LOOTING, 3);
-        return finish(new ItemStack(Material.NETHERITE_SWORD), "cursed_blade", "<#7B2CBF>Cursed Blade", lore, ench, usePack());
-    }
-
-    private ItemStack reaperScythe() {
-        List<String> lore = List.of(
-                "",
-                "<gray>Harvests souls from the fallen.",
-                "<red>Hits can steal life.",
-                "<red>Kills store souls (up to 5).",
-                "<red>Right-click: Soul Slash <gray>- spends all souls",
-                "<gray>for extra damage and healing.",
-                "",
-                "<gray>Netherite <dark_gray>|</dark_gray> Unbreakable <dark_gray>|</dark_gray> Fireproof",
-                "<dark_gray>Halloween Collection");
-        Map<Enchantment, Integer> ench = new LinkedHashMap<>();
-        ench.put(Enchantment.SHARPNESS, 5);
-        ench.put(Enchantment.LOOTING, 3);
-        return finish(new ItemStack(Material.NETHERITE_HOE), "reaper_scythe", "<#B91C1C>Reaper's Scythe", lore, ench, usePack());
-    }
-
-    private ItemStack batBow() {
-        List<String> lore = List.of(
-                "",
-                "<gray>Shadows take wing.",
-                "<dark_purple>Drawn arrows burst into a swarm of bats",
-                "<dark_purple>that bite everything near the impact",
-                "<dark_purple>and heal you.",
-                "<red>Full draw: bigger swarm that also blinds.",
-                "",
-                "<gray>Unbreakable <dark_gray>|</dark_gray> Fireproof",
-                "<dark_gray>Halloween Collection");
-        Map<Enchantment, Integer> ench = new LinkedHashMap<>();
-        ench.put(Enchantment.POWER, 4);
-        return finish(new ItemStack(Material.BOW), "bat_bow", "<#6D28D9>Bat Bow", lore, ench, usePack());
-    }
-
-    private ItemStack finish(ItemStack item, String id, String name, List<String> lore, Map<Enchantment, Integer> ench, boolean withModel) {
+    /** slot: 0 helmet, 1 chestplate, 2 leggings, 3 boots */
+    public ItemStack armorPiece(String set, int slot) {
+        String id = set + "_" + SUFFIX[slot];
+        FileConfiguration c = getConfig();
+        ItemStack item = new ItemStack(ARMOR[slot]);
         ItemMeta meta = item.getItemMeta();
-        meta.displayName(mm("<!italic>" + name));
-        List<Component> loreComponents = new ArrayList<>();
-        for (String line : lore) loreComponents.add(mm("<!italic>" + line));
-        meta.lore(loreComponents);
-        for (Map.Entry<Enchantment, Integer> e : ench.entrySet()) {
-            meta.addEnchant(e.getKey(), e.getValue(), true);
+
+        decorate(meta, id,
+                SET_COLOR.get(set) + PIECE_NAMES.get(set)[slot],
+                armorLore(set, slot),
+                armorEnchants(set, slot));
+
+        // Explicit attributes replace defaults – re-add full Netherite-level protection
+        List<Integer> pts = c.getIntegerList("armor.stats.armor");
+        if (pts.size() != 4) pts = List.of(3, 8, 6, 3);
+        double toughness = c.getDouble("armor.stats.toughness", 3.0);
+        double knockback = c.getDouble("armor.stats.knockback-resistance", 0.1);
+        EquipmentSlotGroup grp = GROUPS[slot];
+
+        meta.addAttributeModifier(Attribute.ARMOR, new AttributeModifier(
+                new NamespacedKey(this, "armor_" + id), pts.get(slot),
+                AttributeModifier.Operation.ADD_NUMBER, grp));
+        meta.addAttributeModifier(Attribute.ARMOR_TOUGHNESS, new AttributeModifier(
+                new NamespacedKey(this, "toughness_" + id), toughness,
+                AttributeModifier.Operation.ADD_NUMBER, grp));
+        meta.addAttributeModifier(Attribute.KNOCKBACK_RESISTANCE, new AttributeModifier(
+                new NamespacedKey(this, "knockback_" + id), knockback,
+                AttributeModifier.Operation.ADD_NUMBER, grp));
+
+        // Set-specific bonus
+        NamespacedKey bonusKey = new NamespacedKey(this, "bonus_" + id);
+        switch (set) {
+            case "pumpkin_king" -> meta.addAttributeModifier(Attribute.MAX_HEALTH,
+                    new AttributeModifier(bonusKey,
+                            c.getDouble("armor.bonus.pumpkin-king-max-health", 2.0),
+                            AttributeModifier.Operation.ADD_NUMBER, grp));
+            case "wraith" -> meta.addAttributeModifier(Attribute.MOVEMENT_SPEED,
+                    new AttributeModifier(bonusKey,
+                            c.getDouble("armor.bonus.wraith-move-speed", 0.04),
+                            AttributeModifier.Operation.ADD_SCALAR, grp));
+            case "witch" -> meta.addAttributeModifier(Attribute.MAX_ABSORPTION,
+                    new AttributeModifier(bonusKey,
+                            c.getDouble("armor.bonus.witch-absorption", 1.0),
+                            AttributeModifier.Operation.ADD_NUMBER, grp));
+            default -> { }
         }
-        meta.setUnbreakable(true);
-        meta.addItemFlags(ItemFlag.HIDE_UNBREAKABLE, ItemFlag.HIDE_DYE);
-        meta.getPersistentDataContainer().set(idKey, PersistentDataType.STRING, id);
-        if (withModel) {
-            // Custom inventory/hand model from the resource pack (assets/halloweengear/items/<id>.json)
-            NamespacedKey model = NamespacedKey.fromString("halloweengear:" + id);
-            if (model != null) meta.setItemModel(model);
-        }
+
+        // Resource-pack hooks: inventory / hand model + worn equipment model
+        meta.setItemModel(new NamespacedKey(this, id));
+        EquippableComponent eq = meta.getEquippable();
+        eq.setSlot(SLOTS[slot]);
+        eq.setModel(new NamespacedKey(this, set));
+        eq.setEquipSound(Sound.ITEM_ARMOR_EQUIP_LEATHER);
+        meta.setEquippable(eq);
+
+        // Hide vanilla leather dye & attribute noise
+        meta.addItemFlags(ItemFlag.HIDE_DYE, ItemFlag.HIDE_ATTRIBUTES, ItemFlag.HIDE_ENCHANTS);
+
         item.setItemMeta(meta);
         return item;
     }
 
-    // ---------- commands ----------
-
-    private void say(CommandSender to, String text) {
-        to.sendMessage(mm(text));
+    private Map<Enchantment, Integer> armorEnchants(String set, int slot) {
+        Map<Enchantment, Integer> e = new LinkedHashMap<>();
+        e.put(Enchantment.PROTECTION, 5);
+        switch (set) {
+            case "pumpkin_king" -> e.put(Enchantment.FIRE_PROTECTION, 5);
+            case "wraith" -> e.put(Enchantment.PROJECTILE_PROTECTION, 5);
+            case "witch" -> e.put(Enchantment.BLAST_PROTECTION, 5);
+            default -> { }
+        }
+        switch (slot) {
+            case 0 -> {
+                e.put(Enchantment.RESPIRATION, 3);
+                e.put(Enchantment.AQUA_AFFINITY, 1);
+            }
+            case 3 -> e.put(Enchantment.FEATHER_FALLING, 4);
+            default -> { }
+        }
+        e.put(Enchantment.UNBREAKING, 3);
+        e.put(Enchantment.MENDING, 1);
+        return e;
     }
 
-    private void giveTo(Player target, String id) {
-        ItemStack item = createItem(id);
-        if (item == null) return;
-        for (ItemStack leftover : target.getInventory().addItem(item).values()) {
-            target.getWorld().dropItemNaturally(target.getLocation(), leftover);
+    private List<Component> armorLore(String set, int slot) {
+        List<Component> lore = new ArrayList<>();
+        lore.add(mm.deserialize("<gray>Part of the " + SET_COLOR.get(set) + SET_NAME.get(set) + " <gray>set"));
+        lore.add(Component.empty());
+        switch (set) {
+            case "pumpkin_king" -> {
+                lore.add(mm.deserialize("<#FF7518>Hellfire Nova <dark_gray>(Sneak + F)"));
+                lore.add(mm.deserialize("<gray>Fire retaliation & +Max Health"));
+            }
+            case "wraith" -> {
+                lore.add(mm.deserialize("<#9FB4C7>Shadow Step <dark_gray>(Sneak + F)"));
+                lore.add(mm.deserialize("<gray>Dodge chance & +Movement Speed"));
+            }
+            case "witch" -> {
+                lore.add(mm.deserialize("<#B05CE0>Hex Burst <dark_gray>(Sneak + F)"));
+                lore.add(mm.deserialize("<gray>Regen, Absorption & +Max Absorption"));
+            }
+            default -> { }
+        }
+        return lore;
+    }
+
+    // ------------------------------------------------------------------ weapons
+
+    public ItemStack cursedBlade() {
+        FileConfiguration c = getConfig();
+        ItemStack item = new ItemStack(Material.NETHERITE_SWORD);
+        ItemMeta meta = item.getItemMeta();
+        String id = "cursed_blade";
+
+        decorate(meta, id, "<#8B0000>Cursed Blade", List.of(
+                mm.deserialize("<gray>Inflicts Wither and Weakness"),
+                mm.deserialize("<dark_gray>A blade forged in cursed flame")
+        ), Map.of(
+                Enchantment.SHARPNESS, 5,
+                Enchantment.UNBREAKING, 3,
+                Enchantment.MENDING, 1,
+                Enchantment.FIRE_ASPECT, 2
+        ));
+
+        // Override attack damage / speed
+        double dmg = c.getDouble("weapons.cursed-blade.attack-damage", 12.0);
+        double spd = c.getDouble("weapons.cursed-blade.attack-speed", 1.7);
+        // Vanilla netherite sword: 8 damage, 1.6 speed. We set absolute values.
+        meta.addAttributeModifier(Attribute.ATTACK_DAMAGE, new AttributeModifier(
+                new NamespacedKey(this, "dmg_" + id), dmg - 1.0, // base is 1
+                AttributeModifier.Operation.ADD_NUMBER, EquipmentSlotGroup.MAINHAND));
+        meta.addAttributeModifier(Attribute.ATTACK_SPEED, new AttributeModifier(
+                new NamespacedKey(this, "spd_" + id), spd - 4.0, // base is 4
+                AttributeModifier.Operation.ADD_NUMBER, EquipmentSlotGroup.MAINHAND));
+
+        meta.setItemModel(new NamespacedKey(this, id));
+        meta.addItemFlags(ItemFlag.HIDE_ATTRIBUTES, ItemFlag.HIDE_ENCHANTS);
+        item.setItemMeta(meta);
+        return item;
+    }
+
+    public ItemStack reaperScythe() {
+        FileConfiguration c = getConfig();
+        ItemStack item = new ItemStack(Material.NETHERITE_HOE); // hoe base for scythe feel
+        ItemMeta meta = item.getItemMeta();
+        String id = "reaper_scythe";
+
+        decorate(meta, id, "<#4B0082>Reaper's Scythe", List.of(
+                mm.deserialize("<gray>25% chance to steal 2 HP on hit"),
+                mm.deserialize("<#4B0082>Soul Slash <dark_gray>(Right-click)"),
+                mm.deserialize("<dark_gray>Harvest the living")
+        ), Map.of(
+                Enchantment.SHARPNESS, 5,
+                Enchantment.UNBREAKING, 3,
+                Enchantment.MENDING, 1
+        ));
+
+        meta.addAttributeModifier(Attribute.ATTACK_DAMAGE, new AttributeModifier(
+                new NamespacedKey(this, "dmg_" + id), 9.0,
+                AttributeModifier.Operation.ADD_NUMBER, EquipmentSlotGroup.MAINHAND));
+        meta.addAttributeModifier(Attribute.ATTACK_SPEED, new AttributeModifier(
+                new NamespacedKey(this, "spd_" + id), -2.4,
+                AttributeModifier.Operation.ADD_NUMBER, EquipmentSlotGroup.MAINHAND));
+
+        meta.setItemModel(new NamespacedKey(this, id));
+        meta.addItemFlags(ItemFlag.HIDE_ATTRIBUTES, ItemFlag.HIDE_ENCHANTS);
+        item.setItemMeta(meta);
+        return item;
+    }
+
+    public ItemStack batBow() {
+        ItemStack item = new ItemStack(Material.BOW);
+        ItemMeta meta = item.getItemMeta();
+        String id = "bat_bow";
+
+        decorate(meta, id, "<#2F2F2F>Bat Bow", List.of(
+                mm.deserialize("<gray>Fires a swarm of bats on impact"),
+                mm.deserialize("<dark_gray>The night answers the call")
+        ), Map.of(
+                Enchantment.POWER, 5,
+                Enchantment.UNBREAKING, 3,
+                Enchantment.MENDING, 1,
+                Enchantment.INFINITY, 1
+        ));
+
+        meta.setItemModel(new NamespacedKey(this, id));
+        meta.addItemFlags(ItemFlag.HIDE_ATTRIBUTES, ItemFlag.HIDE_ENCHANTS);
+        item.setItemMeta(meta);
+        return item;
+    }
+
+    // ------------------------------------------------------------------ helpers
+
+    private void decorate(ItemMeta meta, String id, String name, List<Component> lore,
+                          Map<Enchantment, Integer> enchants) {
+        meta.displayName(mm.deserialize(name));
+        meta.lore(lore);
+        meta.getPersistentDataContainer().set(idKey, PersistentDataType.STRING, id);
+        for (var e : enchants.entrySet()) {
+            meta.addEnchant(e.getKey(), e.getValue(), true);
         }
     }
+
+    // ------------------------------------------------------------------ commands
 
     @Override
     public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
+        if (!command.getName().equalsIgnoreCase("halloween")) return false;
         if (args.length == 0) {
-            say(sender, "<gold>HalloweenGear <gray>- /" + label + " <give|giveset|list|reload>");
+            sender.sendMessage(mm.deserialize("<gold>/halloween <give|giveset|list|reload>"));
             return true;
         }
-        switch (args[0].toLowerCase(Locale.ROOT)) {
+        String sub = args[0].toLowerCase(Locale.ROOT);
+        switch (sub) {
             case "list" -> {
-                say(sender, "<gold>Items: <gray>" + String.join(", ", allItemIds()));
-                say(sender, "<gold>Sets: <gray>" + String.join(", ", SETS));
+                sender.sendMessage(mm.deserialize("<gold>HalloweenGear items:"));
+                for (String id : allItemIds()) {
+                    sender.sendMessage(mm.deserialize("<gray>- <white>" + id));
+                }
             }
             case "reload" -> {
                 if (!sender.hasPermission("halloweengear.admin")) {
-                    say(sender, "<red>You don't have permission.");
+                    sender.sendMessage(mm.deserialize("<red>No permission."));
                     return true;
                 }
                 reloadConfig();
-                say(sender, "<green>HalloweenGear config reloaded.");
+                sender.sendMessage(mm.deserialize("<green>Config reloaded. Re-give items for stat changes."));
             }
             case "give" -> {
                 if (!sender.hasPermission("halloweengear.give")) {
-                    say(sender, "<red>You don't have permission.");
+                    sender.sendMessage(mm.deserialize("<red>No permission."));
                     return true;
                 }
                 if (args.length < 2) {
-                    say(sender, "<red>Usage: /" + label + " give <item> [player]");
+                    sender.sendMessage(mm.deserialize("<red>Usage: /halloween give <item_id> [player]"));
                     return true;
                 }
-                Player target = resolveTarget(sender, args, 2);
-                if (target == null) return true;
-                if (createItem(args[1]) == null) {
-                    say(sender, "<red>Unknown item. Use /" + label + " list");
+                ItemStack stack = createItem(args[1]);
+                if (stack == null) {
+                    sender.sendMessage(mm.deserialize("<red>Unknown item: " + args[1]));
                     return true;
                 }
-                giveTo(target, args[1]);
-                say(sender, "<green>Gave " + args[1].toLowerCase(Locale.ROOT) + " to " + target.getName() + ".");
+                Player target = args.length >= 3
+                        ? getServer().getPlayer(args[2])
+                        : (sender instanceof Player p ? p : null);
+                if (target == null) {
+                    sender.sendMessage(mm.deserialize("<red>Player not found."));
+                    return true;
+                }
+                target.getInventory().addItem(stack);
+                sender.sendMessage(mm.deserialize("<green>Gave " + args[1] + " to " + target.getName()));
             }
             case "giveset" -> {
                 if (!sender.hasPermission("halloweengear.give")) {
-                    say(sender, "<red>You don't have permission.");
+                    sender.sendMessage(mm.deserialize("<red>No permission."));
                     return true;
                 }
                 if (args.length < 2) {
-                    say(sender, "<red>Usage: /" + label + " giveset <set> [player]");
+                    sender.sendMessage(mm.deserialize("<red>Usage: /halloween giveset <pumpkin_king|wraith|witch> [player]"));
                     return true;
                 }
                 String set = args[1].toLowerCase(Locale.ROOT);
                 if (!SETS.contains(set)) {
-                    say(sender, "<red>Unknown set. Sets: " + String.join(", ", SETS));
+                    sender.sendMessage(mm.deserialize("<red>Unknown set. Use pumpkin_king, wraith or witch."));
                     return true;
                 }
-                Player target = resolveTarget(sender, args, 2);
-                if (target == null) return true;
-                for (String suffix : SUFFIX) giveTo(target, set + "_" + suffix);
-                say(sender, "<green>Gave the " + SET_NAME.get(set) + " set to " + target.getName() + ".");
+                Player target = args.length >= 3
+                        ? getServer().getPlayer(args[2])
+                        : (sender instanceof Player p ? p : null);
+                if (target == null) {
+                    sender.sendMessage(mm.deserialize("<red>Player not found."));
+                    return true;
+                }
+                for (int i = 0; i < 4; i++) {
+                    target.getInventory().addItem(armorPiece(set, i));
+                }
+                sender.sendMessage(mm.deserialize("<green>Gave full " + set + " set to " + target.getName()));
             }
-            default -> say(sender, "<red>Unknown subcommand.");
+            default -> sender.sendMessage(mm.deserialize("<gold>/halloween <give|giveset|list|reload>"));
         }
         return true;
     }
 
-    private Player resolveTarget(CommandSender sender, String[] args, int index) {
-        if (args.length > index) {
-            Player p = Bukkit.getPlayerExact(args[index]);
-            if (p == null) say(sender, "<red>Player not found: " + args[index]);
-            return p;
-        }
-        if (sender instanceof Player self) return self;
-        say(sender, "<red>Specify a player.");
-        return null;
-    }
-
     @Override
     public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
-        if (args.length == 1) return filter(List.of("give", "giveset", "list", "reload"), args[0]);
-        if (args.length == 2 && args[0].equalsIgnoreCase("give")) return filter(allItemIds(), args[1]);
-        if (args.length == 2 && args[0].equalsIgnoreCase("giveset")) return filter(SETS, args[1]);
-        if (args.length == 3 && (args[0].equalsIgnoreCase("give") || args[0].equalsIgnoreCase("giveset"))) return null;
-        return List.of();
-    }
-
-    private List<String> filter(List<String> options, String typed) {
-        String t = typed.toLowerCase(Locale.ROOT);
-        List<String> out = new ArrayList<>();
-        for (String o : options) {
-            if (o.startsWith(t)) out.add(o);
+        if (!command.getName().equalsIgnoreCase("halloween")) return List.of();
+        if (args.length == 1) {
+            return List.of("give", "giveset", "list", "reload").stream()
+                    .filter(s -> s.startsWith(args[0].toLowerCase(Locale.ROOT))).toList();
         }
-        return out;
+        if (args.length == 2) {
+            if (args[0].equalsIgnoreCase("give")) {
+                return allItemIds().stream()
+                        .filter(s -> s.startsWith(args[1].toLowerCase(Locale.ROOT))).toList();
+            }
+            if (args[0].equalsIgnoreCase("giveset")) {
+                return SETS.stream()
+                        .filter(s -> s.startsWith(args[1].toLowerCase(Locale.ROOT))).toList();
+            }
+        }
+        return List.of();
     }
 }
