@@ -11,8 +11,15 @@ jobs:
         with:
           distribution: temurin
           java-version: '21'
-      - run: mvn -B -ntp clean package
+      - name: Locate project
+        id: loc
+        run: |
+          f=$(find . -path '*/src/main/java/dev/halloweengear/GearListener.java' | head -1)
+          echo "Found: $f"
+          test -n "$f" || { echo "GearListener.java not found - source not uploaded"; exit 1; }
+          echo "dir=${f%/src/main/java/dev/halloweengear/GearListener.java}" >> "$GITHUB_OUTPUT"
+      - run: mvn -B -ntp -f "${{ steps.loc.outputs.dir }}/pom.xml" clean package
       - uses: actions/upload-artifact@v4
         with:
           name: HalloweenGear
-          path: target/HalloweenGear.jar
+          path: ${{ steps.loc.outputs.dir }}/target/HalloweenGear.jar
