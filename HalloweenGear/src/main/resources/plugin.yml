@@ -1,0 +1,17 @@
+name: HalloweenGear
+version: '1.2.0'
+main: dev.halloweengear.HalloweenGear
+api-version: '1.21'
+description: Halloween armor sets (dyed leather, netherite stats) and weapons.
+commands:
+  halloween:
+    description: Give or list Halloween gear
+    usage: /halloween <give|giveset|list|reload>
+    aliases: [hgear, hw]
+permissions:
+  halloweengear.give:
+    description: Allows /halloween give and /halloween giveset
+    default: op
+  halloweengear.admin:
+    description: Allows /halloween reload
+    default: op

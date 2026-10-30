@@ -1,0 +1,84 @@
+# HalloweenGear config
+# NOTE: item stats / lore are baked in when an item is created, so re-give gear after changing them.
+#
+# Armor is dyed LEATHER (Pumpkin King = orange, Wraith = grey-blue, Witch = purple)
+# with netherite stats applied through attributes.
+
+armor:
+  # Potion effects, passive perks and set abilities while wearing all 4 pieces of a set.
+  set-bonuses: true
+  particles: true
+
+  # Wraith set: chance (0.0 - 1.0) to completely dodge an incoming hit.
+  wraith-dodge-chance: 0.20
+  # Witch set: heal this many HP every 3 seconds.
+  witch-heal-amount: 1.5
+
+  # Base per-piece stats. Defaults = vanilla netherite.
+  stats:
+    armor: [3, 8, 6, 3]        # helmet, chestplate, leggings, boots
+    toughness: 3.0             # per piece
+    knockback-resistance: 0.1  # per piece (0.4 total = netherite)
+
+  # Extra attribute each piece gives on top of netherite stats.
+  bonus:
+    pumpkin-king-max-health: 2.0   # per piece (8 = +4 hearts for the full set)
+    wraith-move-speed: 0.04        # per piece, fraction of base speed (0.04 x 4 = +16%)
+    witch-absorption: 1.0          # per piece (4 = +2 golden hearts for the full set)
+
+  # Full-set active abilities. Trigger: SNEAK + press the Swap Hands key (default F).
+  abilities:
+    enabled: true
+    pumpkin_king:                  # Hellfire Nova
+      cooldown-seconds: 25
+      radius: 6.0
+      damage: 8.0
+      fire-seconds: 6
+      thorns-fire-seconds: 4       # passive: attackers who melee you burn for this long
+    wraith:                        # Shadow Step
+      cooldown-seconds: 12
+      distance: 9.0
+      invisibility-seconds: 3
+    witch:                         # Hex Burst
+      cooldown-seconds: 20
+      radius: 7.0
+      curse-seconds: 6
+      self-regen-seconds: 6
+      self-absorption-seconds: 10
+
+items:
+  # Dropped Halloween items can't burn up in fire/lava or blow up (leather normally burns).
+  fireproof: true
+  # Dropped Halloween items never despawn.
+  never-despawn: true
+
+weapons:
+  cursed-blade:
+    # Netherite sword. These are the TOTAL values shown on the tooltip
+    # (netherite sword is 8 damage / 1.6 speed; this is a big upgrade).
+    attack-damage: 12.0
+    attack-speed: 1.7
+    wither-seconds: 4
+    weakness-seconds: 5
+
+  reaper-scythe:
+    # Total values shown on the tooltip.
+    attack-damage: 9.0
+    attack-speed: 1.6
+    # Passive: chance on hit to steal life.
+    lifesteal-chance: 0.25
+    lifesteal-amount: 2.0
+    # Right-click ability: Soul Slash.
+    slash-cooldown-seconds: 8
+    slash-damage: 8.0
+    slash-radius: 4.5
+    heal-per-target: 1.0
+    max-heal: 6.0
+
+  bat-bow:
+    bat-count: 6
+    # Damage dealt once per second to everything near the impact point.
+    pulse-damage: 3.0
+    radius: 3.5
+    duration-seconds: 3
+    affect-players: true
