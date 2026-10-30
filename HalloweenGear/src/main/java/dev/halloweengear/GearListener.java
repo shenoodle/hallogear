@@ -30,7 +30,7 @@ import org.bukkit.event.entity.ItemSpawnEvent;
 import org.bukkit.event.entity.ProjectileHitEvent;
 import org.bukkit.event.player.PlayerInteractEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
-import org.bukkit.event.player.PlayerSwapHandItemEvent;
+import org.bukkit.event.player.PlayerSwapHandItemsEvent;
 import org.bukkit.inventory.EquipmentSlot;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.PlayerInventory;
@@ -231,7 +231,7 @@ public final class GearListener implements Listener {
     // ================================================================== armor abilities
 
     @EventHandler
-    public void onSwapHands(PlayerSwapHandItemEvent e) {
+    public void onSwapHands(PlayerSwapHandItemsEvent e) {
         Player p = e.getPlayer();
         if (!p.isSneaking()) return;
         if (!cfg().getBoolean("armor.set-bonuses", true) || !cfg().getBoolean("armor.abilities.enabled", true)) return;
