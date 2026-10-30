@@ -1,12 +1,20 @@
 # HalloweenGear config
 
 resource-pack:
-  # Items use the custom models/textures from the resource pack
-  # (assets/halloweengear/...). Set to false to get plain netherite-looking items
+  # Weapons use the custom models/textures from the resource pack
+  # (assets/halloweengear/...). Set to false for plain netherite-looking weapons
   # with no pack required.
   enabled: true
 
 armor:
+  # Armor is dyed leather by default. Set true to also use the resource pack's custom icons,
+  # 3D hats/hood and worn-armor models for the armor (needs the pack, give new items after).
+  use-resource-pack: false
+  # Per-piece stats (netherite values by default). Applies to newly created items.
+  stats:
+    armor: [3, 8, 6, 3]        # helmet, chestplate, leggings, boots
+    toughness: 3.0             # per piece
+    knockback-resistance: 0.1  # per piece (0.4 total = netherite)
   # Potion effects + particles while wearing all 4 pieces of a set.
   set-bonuses: true
   particles: true

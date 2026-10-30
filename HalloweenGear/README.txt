@@ -1,9 +1,10 @@
 HalloweenGear for Paper 1.21.11
 ===============================
 
-All items are real NETHERITE items (armor = netherite stats, sword/hoe = netherite damage),
-unbreakable and fireproof (dropped items can't burn, explode, or despawn).
-Armor also has Protection IV.
+Armor is dyed LEATHER with netherite-level stats (20 armor, 12 toughness, 0.4 knockback
+resistance) plus Protection IV. Weapons are real NETHERITE items (sword, hoe) and a bow.
+Everything is unbreakable and fireproof (dropped items can't burn, explode, or despawn).
+Armor looks like dyed leather unless you set armor.use-resource-pack: true in config.yml.
 
 RESOURCE PACK
   Items use custom models from a resource pack (namespace "halloweengear"):
